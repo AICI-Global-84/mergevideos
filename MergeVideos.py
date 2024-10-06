@@ -1,113 +1,122 @@
-import requests
-import subprocess
 import os
-import ffmpeg
-
-
-class LoadVideoFromURLs:
-    def __init__(self):
-        pass
-
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "urls": ("STRING", {"multiline": True, "tooltip": "Danh sách các URL video, mỗi URL trên một dòng."}),
-            }
-        }
-
-    RETURN_TYPES = ("STRING",)  # Trả về danh sách đường dẫn video đã tải
-    RETURN_NAMES = ("video_files",)
-    FUNCTION = "load_videos"
-
-    def load_videos(self, urls):
-        video_files = []
-        for i, url in enumerate(urls.splitlines()):
-            response = requests.get(url)
-            video_file_path = f"video_{i}.mp4"
-            with open(video_file_path, 'wb') as f:
-                f.write(response.content)
-            video_files.append(video_file_path)
-        return (video_files,)
+import tempfile
+import requests
+from moviepy.editor import VideoFileClip, concatenate_videoclips
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaFileUpload
 
 class MergeVideos:
-    def __init__(self):
-        pass
+    SCOPES = ['https://www.googleapis.com/auth/drive.file']
+    SERVICE_ACCOUNT_FILE = '/content/drive/My Drive/SD-Data/comfyui-n8n-aici01-7679b55c962b.json'
+    DRIVE_FOLDER_ID = '1fZyeDT_eW6ozYXhqi_qLVy-Xnu5JD67a'
 
     @classmethod
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "video_files": ("STRING", {"multiline": True, "tooltip": "Danh sách đường dẫn video để ghép, mỗi video trên một dòng."}),
+                "video_urls": ("STRING", {"tooltip": "Danh sách video URLs, mỗi URL một dòng hoặc cách nhau bằng dấu ','."})
             }
         }
 
     RETURN_TYPES = ("STRING",)
-    RETURN_NAMES = ("merged_video",)
-    FUNCTION = "merge_videos"
+    RETURN_NAMES = ("output_video_url",)
+    FUNCTION = "merge_and_upload_videos"
+    CATEGORY = "video/audio"
 
-    def download_video(url, output_dir):
-    response = requests.get(url)
-    video_path = os.path.join(output_dir, url.split("/")[-1])  # Lưu video với tên file gốc
-    with open(video_path, 'wb') as file:
-        file.write(response.content)
-    return video_path
-
-    def merge_videos(video_urls, output_file):
-        # Tải các video xuống trước
-        downloaded_videos = [download_video(url, '/path/to/download/directory') for url in video_urls]
-        
-        # Lưu danh sách video vào file txt để ffmpeg sử dụng
-        with open('videos_to_concat.txt', 'w') as f:
-            for video in downloaded_videos:
-                f.write(f"file '{video}'\n")
-        
-        # Sử dụng ffmpeg để ghép video
-        ffmpeg.input('videos_to_concat.txt', format='concat', safe=0).output(output_file).run()
-    
-    # Ví dụ sử dụng
-    video_urls = [
-        "https://example.com/video1.mp4",
-        "https://example.com/video2.mp4"
-    ]
-    merge_videos(video_urls, 'output_video.mp4')
-
-class UploadToDestination:
     def __init__(self):
-        pass
+        self.drive_service = None
+        self._initialize_drive_service()
 
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "file_path": ("STRING", {"tooltip": "Đường dẫn đến video đã ghép."}),
-                "destination_url": ("STRING", {"tooltip": "URL nơi video sẽ được upload."}),
+    def _initialize_drive_service(self):
+        try:
+            credentials = service_account.Credentials.from_service_account_file(
+                self.SERVICE_ACCOUNT_FILE, scopes=self.SCOPES)
+            self.drive_service = build('drive', 'v3', credentials=credentials)
+        except Exception as e:
+            print(f"Error initializing Drive service: {str(e)}")
+            raise RuntimeError(f"Failed to initialize Drive service: {str(e)}")
+
+    def _upload_to_drive(self, file_path):
+        try:
+            file_metadata = {
+                'name': os.path.basename(file_path),
+                'parents': [self.DRIVE_FOLDER_ID]
             }
-        }
+            media = MediaFileUpload(file_path, resumable=True)
+            file = self.drive_service.files().create(
+                body=file_metadata,
+                media_body=media,
+                fields='id'
+            ).execute()
 
-    RETURN_TYPES = ("STRING",)
-    RETURN_NAMES = ("upload_result",)
-    FUNCTION = "upload_video"
+            self.drive_service.permissions().create(
+                fileId=file.get('id'),
+                body={'type': 'anyone', 'role': 'reader'},
+                fields='id'
+            ).execute()
 
-    def upload_video(self, file_path, destination_url):
-        with open(file_path, 'rb') as f:
-            response = requests.post(destination_url, files={'file': f})
-        
-        if response.ok:
-            return (response.json(),)
-        else:
-            raise ValueError("Failed to upload video.")
+            file_id = file.get('id')
+            return f"https://drive.google.com/uc?id={file_id}"
+
+        except Exception as e:
+            raise RuntimeError(f"Failed to upload to Drive: {str(e)}")
+
+    def merge_and_upload_videos(self, video_urls):
+        """
+        Ghép tất cả video từ danh sách video URLs và upload lên Google Drive.
+        """
+        temp_output_path = None  # Khởi tạo biến temp_output_path để tránh lỗi UnboundLocalError
+        video_clips = []
+
+        try:
+            # Phân tách video_urls từ chuỗi
+            urls = [url.strip() for url in video_urls.split(',')]
+            
+            # Tải từng video về và thêm vào danh sách video_clips
+            for url in urls:
+                response = requests.get(url)
+                if response.status_code == 200:
+                    with tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') as temp_video_file:
+                        temp_video_file.write(response.content)
+                        temp_video_path = temp_video_file.name
+                        video_clips.append(VideoFileClip(temp_video_path))
+                else:
+                    print(f"Failed to download video from URL: {url}")
+
+            # Ghép các video lại với nhau
+            final_video = concatenate_videoclips(video_clips)
+
+            # Tạo file tạm để lưu video đầu ra
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') as temp_output:
+                temp_output_path = temp_output.name
+                final_video.write_videofile(
+                    temp_output_path,
+                    codec='libx264',
+                    audio_codec='aac',
+                    remove_temp=True
+                )
+
+            # Tải lên Google Drive
+            output_video_url = self._upload_to_drive(temp_output_path)
+            return (output_video_url,)
+
+        except Exception as e:
+            raise RuntimeError(f"Failed to merge videos and upload: {str(e)}")
+
+        finally:
+            # Đóng tất cả video clips và xóa file tạm
+            for clip in video_clips:
+                clip.close()
+            if temp_output_path and os.path.exists(temp_output_path):
+                os.unlink(temp_output_path)
 
 # A dictionary that contains all nodes you want to export with their names
 NODE_CLASS_MAPPINGS = {
-    "LoadVideoFromURLs": LoadVideoFromURLs,
-    "MergeVideos": MergeVideos,
-    "UploadToDestination": UploadToDestination
+    "MergeVideos": MergeVideos
 }
 
 # A dictionary that contains the friendly/humanly readable titles for the nodes
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "LoadVideoFromURLs": "Load Video from URLs",
-    "MergeVideos": "Merge Videos",
-    "UploadToDestination": "Upload to Destination"
+    "MergeVideos": "Merge Videos and Upload"
 }

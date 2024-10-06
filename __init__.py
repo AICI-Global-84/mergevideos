@@ -1,15 +1,10 @@
-from .MergeVideos import LoadVideoFromURLs, MergeVideos, UploadToDestination
-
+from .MergeVideos import MergeVideos
 NODE_CLASS_MAPPINGS = {
-    "LoadVideoFromURLs": LoadVideoFromURLs,
-    "MergeVideos": MergeVideos,
-    "UploadToDestination": UploadToDestination
+    "MergeVideos": MergeVideos
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "LoadVideoFromURLs": "Load Video from URLs",
-    "MergeVideos": "Merge Videos",
-    "UploadToDestination": "Upload to Destination"
+    "MergeVideos": "Merge Videos and Upload"
 }
 
 __all__ = ['NODE_CLASS_MAPPINGS', 'NODE_DISPLAY_NAME_MAPPINGS']

@@ -1,6 +1,8 @@
 import requests
 import subprocess
 import os
+import ffmpeg
+
 
 class LoadVideoFromURLs:
     def __init__(self):
@@ -44,21 +46,31 @@ class MergeVideos:
     RETURN_NAMES = ("merged_video",)
     FUNCTION = "merge_videos"
 
-    def merge_videos(self, video_files):
-        video_files_list = video_files.splitlines()
-        concat_file = "videos_to_concat.txt"
+    def download_video(url, output_dir):
+    response = requests.get(url)
+    video_path = os.path.join(output_dir, url.split("/")[-1])  # Lưu video với tên file gốc
+    with open(video_path, 'wb') as file:
+        file.write(response.content)
+    return video_path
 
-        with open(concat_file, "w") as f:
-            for video in video_files_list:
-                f.write(f"file '{video}'\n")
-
-        output_file = "merged_output.mp4"
-        subprocess.run([
-            "ffmpeg", "-f", "concat", "-safe", "0", "-i", concat_file,
-            "-c", "copy", output_file
-        ])
+    def merge_videos(video_urls, output_file):
+        # Tải các video xuống trước
+        downloaded_videos = [download_video(url, '/path/to/download/directory') for url in video_urls]
         
-        return (output_file,)
+        # Lưu danh sách video vào file txt để ffmpeg sử dụng
+        with open('videos_to_concat.txt', 'w') as f:
+            for video in downloaded_videos:
+                f.write(f"file '{video}'\n")
+        
+        # Sử dụng ffmpeg để ghép video
+        ffmpeg.input('videos_to_concat.txt', format='concat', safe=0).output(output_file).run()
+    
+    # Ví dụ sử dụng
+    video_urls = [
+        "https://example.com/video1.mp4",
+        "https://example.com/video2.mp4"
+    ]
+    merge_videos(video_urls, 'output_video.mp4')
 
 class UploadToDestination:
     def __init__(self):
